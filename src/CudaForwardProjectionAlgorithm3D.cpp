@@ -40,6 +40,8 @@ $Id$
 #include "astra/ParallelVecProjectionGeometry3D.h"
 #include "astra/ConeVecProjectionGeometry3D.h"
 
+#include "astra/CompositeGeometryManager.h"
+
 #include "astra/Logging.h"
 
 #include "../cuda/3d/astra3d.h"
@@ -72,6 +74,23 @@ CCudaForwardProjectionAlgorithm3D::~CCudaForwardProjectionAlgorithm3D()
 }
 
 //---------------------------------------------------------------------------------------
+void CCudaForwardProjectionAlgorithm3D::initializeFromProjector()
+{
+	m_iDetectorSuperSampling = 1;
+	m_iGPUIndex = -1;
+
+	CCudaProjector3D* pCudaProjector = dynamic_cast<CCudaProjector3D*>(m_pProjector);
+	if (!pCudaProjector) {
+		if (m_pProjector) {
+			ASTRA_WARN("non-CUDA Projector3D passed to FP3D_CUDA");
+		}
+	} else {
+		m_iDetectorSuperSampling = pCudaProjector->getDetectorSuperSampling();
+		m_iGPUIndex = pCudaProjector->getGPUIndex();
+	}
+}
+
+//---------------------------------------------------------------------------------------
 // Initialize - Config
 bool CCudaForwardProjectionAlgorithm3D::initialize(const Config& _cfg)
 {
@@ -97,19 +116,21 @@ bool CCudaForwardProjectionAlgorithm3D::initialize(const Config& _cfg)
 
 	// optional: projector
 	node = _cfg.self.getSingleNode("ProjectorId");
+	m_pProjector = 0;
 	if (node) {
 		id = boost::lexical_cast<int>(node.getContent());
 		m_pProjector = CProjector3DManager::getSingleton().get(id);
-	} else {
-		m_pProjector = 0; // TODO: or manually construct default projector?
 	}
 	CC.markNodeParsed("ProjectorId");
 
-	// GPU number
-	m_iGPUIndex = (int)_cfg.self.getOptionNumerical("GPUindex", -1);
-	CC.markOptionParsed("GPUindex");
-	m_iDetectorSuperSampling = (int)_cfg.self.getOptionNumerical("DetectorSuperSampling", 1);
+	initializeFromProjector();
+
+	// Deprecated options
+	m_iDetectorSuperSampling = (int)_cfg.self.getOptionNumerical("DetectorSuperSampling", m_iDetectorSuperSampling);
+	m_iGPUIndex = (int)_cfg.self.getOptionNumerical("GPUindex", m_iGPUIndex);
 	CC.markOptionParsed("DetectorSuperSampling");
+	CC.markOptionParsed("GPUindex");
+
 
 	// success
 	m_bIsInitialized = check();
@@ -132,8 +153,15 @@ bool CCudaForwardProjectionAlgorithm3D::initialize(CProjector3D* _pProjector,
 	m_pProjections = _pProjections;
 	m_pVolume = _pVolume;
 
-	m_iDetectorSuperSampling = _iDetectorSuperSampling;
-	m_iGPUIndex = _iGPUindex;
+	CCudaProjector3D* pCudaProjector = dynamic_cast<CCudaProjector3D*>(m_pProjector);
+	if (!pCudaProjector) {
+		// TODO: Report
+		m_iDetectorSuperSampling = _iDetectorSuperSampling;
+		m_iGPUIndex = _iGPUindex;
+	} else {
+		m_iDetectorSuperSampling = pCudaProjector->getDetectorSuperSampling();
+		m_iGPUIndex = pCudaProjector->getGPUIndex();
+	}
 
 	// success
 	m_bIsInitialized = check();
@@ -238,10 +266,6 @@ void CCudaForwardProjectionAlgorithm3D::run(int)
 	assert(m_bIsInitialized);
 
 	const CProjectionGeometry3D* projgeom = m_pProjections->getGeometry();
-	const CConeProjectionGeometry3D* conegeom = dynamic_cast<const CConeProjectionGeometry3D*>(projgeom);
-	const CParallelProjectionGeometry3D* par3dgeom = dynamic_cast<const CParallelProjectionGeometry3D*>(projgeom);
-	const CConeVecProjectionGeometry3D* conevecgeom = dynamic_cast<const CConeVecProjectionGeometry3D*>(projgeom);
-	const CParallelVecProjectionGeometry3D* parvec3dgeom = dynamic_cast<const CParallelVecProjectionGeometry3D*>(projgeom);
 	const CVolumeGeometry3D& volgeom = *m_pVolume->getGeometry();
 
 	Cuda3DProjectionKernel projKernel = ker3d_default;
@@ -250,75 +274,46 @@ void CCudaForwardProjectionAlgorithm3D::run(int)
 		projKernel = projector->getProjectionKernel();
 	}
 
-#if 0
-	// Debugging code that gives the coordinates of the corners of the volume
-	// projected on the detector.
-	{
-		float fX[] = { volgeom.getWindowMinX(), volgeom.getWindowMaxX() };
-		float fY[] = { volgeom.getWindowMinY(), volgeom.getWindowMaxY() };
-		float fZ[] = { volgeom.getWindowMinZ(), volgeom.getWindowMaxZ() };
+	if (m_pProjections->getMPIProjector3D()) {
 
-		for (int a = 0; a < projgeom->getProjectionCount(); ++a)
-		for (int i = 0; i < 2; ++i)
-		for (int j = 0; j < 2; ++j)
-		for (int k = 0; k < 2; ++k) {
-			float fU, fV;
-			projgeom->projectPoint(fX[i], fY[j], fZ[k], a, fU, fV);
-			ASTRA_DEBUG("%3d %c1,%c1,%c1 -> %12f %12f", a, i ? ' ' : '-', j ? ' ' : '-', k ? ' ' : '-', fU, fV);
+		// MPI
+
+		astraCudaFP(m_pVolume->getDataConst(), m_pProjections->getData(),
+		            &volgeom, projgeom,
+		            m_iGPUIndex, m_iDetectorSuperSampling, projKernel,
+		            m_pProjections->getMPIProjector3D());
+
+	} else {
+
+#if 1
+		CCompositeGeometryManager cgm;
+
+		cgm.doFP(m_pProjector, m_pVolume, m_pProjections);
+
+#else
+#if 0
+		// Debugging code that gives the coordinates of the corners of the volume
+		// projected on the detector.
+		{
+			float fX[] = { volgeom.getWindowMinX(), volgeom.getWindowMaxX() };
+			float fY[] = { volgeom.getWindowMinY(), volgeom.getWindowMaxY() };
+			float fZ[] = { volgeom.getWindowMinZ(), volgeom.getWindowMaxZ() };
+
+			for (int a = 0; a < projgeom->getProjectionCount(); ++a)
+			for (int i = 0; i < 2; ++i)
+			for (int j = 0; j < 2; ++j)
+			for (int k = 0; k < 2; ++k) {
+				float fU, fV;
+				projgeom->projectPoint(fX[i], fY[j], fZ[k], a, fU, fV);
+				ASTRA_DEBUG("%3d %c1,%c1,%c1 -> %12f %12f", a, i ? ' ' : '-', j ? ' ' : '-', k ? ' ' : '-', fU, fV);
+			}
 		}
-	}
 #endif
 
-	if (conegeom) {
-		astraCudaConeFP(m_pVolume->getDataConst(), m_pProjections->getData(),
-		                volgeom.getGridColCount(),
-		                volgeom.getGridRowCount(),
-		                volgeom.getGridSliceCount(),
-		                conegeom->getProjectionCount(),
-		                conegeom->getDetectorColCount(),
-		                conegeom->getDetectorRowCount(),
-		                conegeom->getOriginSourceDistance(),
-		                conegeom->getOriginDetectorDistance(),
-		                conegeom->getDetectorSpacingX(),
-		                conegeom->getDetectorSpacingY(),
-		                conegeom->getProjectionAngles(),
-		                m_iGPUIndex, m_iDetectorSuperSampling);
-	} else if (par3dgeom) {
-		astraCudaPar3DFP(m_pVolume->getDataConst(), m_pProjections->getData(),
-		                 volgeom.getGridColCount(),
-		                 volgeom.getGridRowCount(),
-		                 volgeom.getGridSliceCount(),
-		                 par3dgeom->getProjectionCount(),
-		                 par3dgeom->getDetectorColCount(),
-		                 par3dgeom->getDetectorRowCount(),
-		                 par3dgeom->getDetectorSpacingX(),
-		                 par3dgeom->getDetectorSpacingY(),
-		                 par3dgeom->getProjectionAngles(),
-		                 m_iGPUIndex, m_iDetectorSuperSampling,
-		                 projKernel);
-	} else if (parvec3dgeom) {
-		astraCudaPar3DFP(m_pVolume->getDataConst(), m_pProjections->getData(),
-		                 volgeom.getGridColCount(),
-		                 volgeom.getGridRowCount(),
-		                 volgeom.getGridSliceCount(),
-		                 parvec3dgeom->getProjectionCount(),
-		                 parvec3dgeom->getDetectorColCount(),
-		                 parvec3dgeom->getDetectorRowCount(),
-		                 parvec3dgeom->getProjectionVectors(),
-		                 m_iGPUIndex, m_iDetectorSuperSampling,
-		                 projKernel);
-	} else if (conevecgeom) {
-		astraCudaConeFP(m_pVolume->getDataConst(), m_pProjections->getData(),
-		                volgeom.getGridColCount(),
-		                volgeom.getGridRowCount(),
-		                volgeom.getGridSliceCount(),
-		                conevecgeom->getProjectionCount(),
-		                conevecgeom->getDetectorColCount(),
-		                conevecgeom->getDetectorRowCount(),
-		                conevecgeom->getProjectionVectors(),
-		                m_iGPUIndex, m_iDetectorSuperSampling);
-	} else {
-		ASTRA_ASSERT(false);
+		astraCudaFP(m_pVolume->getDataConst(), m_pProjections->getData(),
+		            &volgeom, projgeom,
+		            m_iGPUIndex, m_iDetectorSuperSampling, projKernel);
+#endif
 	}
 
 }

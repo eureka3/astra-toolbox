@@ -1,6 +1,7 @@
 cuda=@HAVECUDA@
 matlab=@HAVEMATLAB@
 python=@HAVEPYTHON@
+mpi=@HAVEMPI@
 boostutf=@HAVEBOOSTUTF@
 
 
@@ -25,22 +26,39 @@ VPATH=../..
 
 CPPFLAGS=@SAVED_CPPFLAGS@
 CXXFLAGS=@SAVED_CXXFLAGS@
+NVCCFLAGS=@SAVED_NVCCFLAGS@
 LDFLAGS=@SAVED_LDFLAGS@
 LIBS=@SAVED_LIBS@
 
 CPPFLAGS+=-I../.. -I../../include -I../../lib/include
-CXXFLAGS+=-g -O3 -Wall -Wshadow
+CXXFLAGS+= -std=c++11 -g -O3 -Wall -Wshadow
 LIBS+=-lpthread
 LDFLAGS+=-g
+
+MPI_INCLUDE_PATH=
+ifeq ($(mpi), yes)
+  MPI_INCLUDE_PATH =@MPI_PATH@
+  CXXFLAGS	+= -std=c++11 -DUSE_MPI=1  -DMPICH_SKIP_MPICXX=1 -DOMPI_SKIP_MPICXX=1
+  #The above disables c++ bindings which, for some reason, give loading errors
+endif
 
 CPPFLAGS+=@CPPFLAGS_OS@
 
 ifeq ($(cuda),yes)
-CPPFLAGS  += @CPPFLAGS_CUDA@ -DASTRA_CUDA
-NVCCFLAGS  = @NVCCFLAGS@ @CPPFLAGS_CUDA@ -I../.. -I../../include -DASTRA_CUDA
-LDFLAGS   += @LDFLAGS_CUDA@
-LIBS      += -lcudart -lcufft
-NVCC       = @NVCC@
+  CPPFLAGS  += @CPPFLAGS_CUDA@ -DASTRA_CUDA
+  NVCCFLAGS += @NVCCFLAGS_EXTRA@ @CPPFLAGS_CUDA@ -I../.. -I../../include -DASTRA_CUDA
+  
+  #Only add if it is not empty
+  ifneq ($(strip $(MPI_INCLUDE_PATH)),)
+    NVCCFLAGS += -I$(MPI_INCLUDE_PATH) 
+  endif
+
+  ifeq ($(mpi), yes)
+    NVCCFLAGS += -std=c++11 -DUSE_MPI=1
+  endif
+  LDFLAGS   += @LDFLAGS_CUDA@
+  LIBS      += -lcudart -lcufft
+  NVCC       = @NVCC@
 endif
 
 ifeq ($(matlab),yes)
@@ -50,11 +68,20 @@ LDFLAGS+=-fopenmp
 endif
 
 ifeq ($(python),yes)
-PYCPPFLAGS  = ${CPPFLAGS}
-PYCPPFLAGS  += -I../include
-PYLDFLAGS = ${LDFLAGS}
-PYLDFLAGS   += -L../build/linux/.libs
 PYTHON      = @PYTHON@
+PYLIBDIR = $(shell $(PYTHON) -c 'from distutils.sysconfig import get_config_var; import six; six.print_(get_config_var("LIBDIR"))')
+PYINCDIR = $(shell $(PYTHON) -c 'from distutils.sysconfig import get_python_inc; import six; six.print_(get_python_inc())')
+PYLIBVER = `basename $(PYINCDIR)`
+CPPFLAGS += -DASTRA_PYTHON -I$(PYINCDIR)
+PYCPPFLAGS  = $(CPPFLAGS)
+PYCPPFLAGS  += -I../include
+PYLDFLAGS = $(LDFLAGS)
+PYLDFLAGS   += -L../build/linux/.libs
+LIBS		+= -l$(PYLIBVER)
+LDFLAGS += -L$(PYLIBDIR)
+ifeq ($(mpi), yes)
+    PYCPPFLAGS += -std=c++11 -DUSE_MPI=1
+endif
 endif
 
 BOOST_CPPFLAGS=
@@ -65,6 +92,10 @@ BOOSTUTF_LIBS=@LIBS_BOOSTUTF@
 
 CPPFLAGS+=$(BOOST_CPPFLAGS)
 LDFLAGS+=$(BOOST_LDFLAGS)
+
+ifneq ($(strip $(MPI_INCLUDE_PATH)),)
+  CPPFLAGS+= -I$(MPI_INCLUDE_PATH)  
+endif
 
 
 MKDIR=mkdir -p
@@ -99,6 +130,7 @@ BASE_OBJECTS=\
 	src/AstraObjectManager.lo \
 	src/BackProjectionAlgorithm.lo \
 	src/CglsAlgorithm.lo \
+	src/CompositeGeometryManager.lo \
 	src/ConeProjectionGeometry3D.lo \
 	src/ConeVecProjectionGeometry3D.lo \
 	src/Config.lo \
@@ -124,6 +156,7 @@ BASE_OBJECTS=\
 	src/GeometryUtil3D.lo \
 	src/Globals.lo \
 	src/Logging.lo \
+	src/MPIProjector3D.lo \
 	src/ParallelBeamBlobKernelProjector2D.lo \
 	src/ParallelBeamLinearKernelProjector2D.lo \
 	src/ParallelBeamLineKernelProjector2D.lo \
@@ -197,7 +230,8 @@ CUDA_OBJECTS=\
 	cuda/3d/sirt3d.lo \
 	cuda/3d/astra3d.lo \
 	cuda/3d/util3d.lo \
-	cuda/3d/arith3d.lo
+	cuda/3d/arith3d.lo \
+	cuda/3d/mem3d.lo
 
 ALL_OBJECTS=$(BASE_OBJECTS)
 ifeq ($(cuda),yes)
@@ -232,8 +266,13 @@ MATLAB_MEX=\
 	matlab/mex/astra_mex_projector_c.$(MEXSUFFIX) \
 	matlab/mex/astra_mex_projector3d_c.$(MEXSUFFIX) \
 	matlab/mex/astra_mex_log_c.$(MEXSUFFIX) \
-	matlab/mex/astra_mex_data3d_c.$(MEXSUFFIX)
+	matlab/mex/astra_mex_data3d_c.$(MEXSUFFIX) \
+	matlab/mex/astra_mex_direct_c.$(MEXSUFFIX)
 
+ifeq ($(python),yes)
+ALL_OBJECTS+=src/PluginAlgorithm.lo
+MATLAB_MEX+=matlab/mex/astra_mex_plugin_c.$(MEXSUFFIX)
+endif
 
 OBJECT_DIRS = src/ tests/ cuda/2d/ cuda/3d/ matlab/mex/ ./
 DEPDIRS = $(addsuffix $(DEPDIR),$(OBJECT_DIRS))
@@ -253,6 +292,10 @@ py: libastra.la
 	cd ../../python; CPPFLAGS="${PYCPPFLAGS}" LDFLAGS="${PYLDFLAGS}" $(PYTHON) builder.py install \
 	--install-base=./finalbuild --install-headers=./finalbuild --install-purelib=./finalbuild \
 	--install-platlib=./finalbuild --install-scripts=./finalbuild --install-data=./finalbuild
+
+python-root-install: libastra.la
+	cd ../../python; CPPFLAGS="${PYCPPFLAGS}" LDFLAGS="${PYLDFLAGS}" $(PYTHON) builder.py install
+
 endif
 
 

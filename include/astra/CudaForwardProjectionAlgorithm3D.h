@@ -114,6 +114,14 @@ public:
 	 * @param _iGPUIndex New GPU index.
 	 */
 	void setGPUIndex(int _iGPUIndex);
+	
+	
+
+	/*
+	 * The required MPI code is implemented for this function / algorithm
+	 * 
+	*/	
+	bool isMPICapable() {return true;}
 
 protected:
 	CProjector3D* m_pProjector;
@@ -122,6 +130,7 @@ protected:
 	int m_iGPUIndex;
 	int m_iDetectorSuperSampling;
 
+	void initializeFromProjector();
 };
 
 // inline functions

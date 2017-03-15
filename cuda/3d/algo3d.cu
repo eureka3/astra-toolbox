@@ -41,6 +41,8 @@ ReconAlgo3D::ReconAlgo3D()
 	coneProjs = 0;
 	par3DProjs = 0;
 	shouldAbort = false;
+	fOutputScale = 1.0f;
+        mpiPrj = NULL;
 }
 
 ReconAlgo3D::~ReconAlgo3D()
@@ -57,9 +59,10 @@ void ReconAlgo3D::reset()
 	shouldAbort = false;
 }
 
-bool ReconAlgo3D::setConeGeometry(const SDimensions3D& _dims, const SConeProjection* _angles)
+bool ReconAlgo3D::setConeGeometry(const SDimensions3D& _dims, const SConeProjection* _angles, float _outputScale)
 {
 	dims = _dims;
+	fOutputScale = _outputScale;
 
 	coneProjs = new SConeProjection[dims.iProjAngles];
 	par3DProjs = 0;
@@ -69,9 +72,10 @@ bool ReconAlgo3D::setConeGeometry(const SDimensions3D& _dims, const SConeProject
 	return true;
 }
 
-bool ReconAlgo3D::setPar3DGeometry(const SDimensions3D& _dims, const SPar3DProjection* _angles)
+bool ReconAlgo3D::setPar3DGeometry(const SDimensions3D& _dims, const SPar3DProjection* _angles, float _outputScale)
 {
 	dims = _dims;
+	fOutputScale = _outputScale;
 
 	par3DProjs = new SPar3DProjection[dims.iProjAngles];
 	coneProjs = 0;
@@ -87,19 +91,20 @@ bool ReconAlgo3D::callFP(cudaPitchedPtr& D_volumeData,
                        float outputScale)
 {
 	if (coneProjs) {
-		return ConeFP(D_volumeData, D_projData, dims, coneProjs, outputScale);
+		return ConeFP(D_volumeData, D_projData, dims, coneProjs, outputScale * this->fOutputScale, mpiPrj);
 	} else {
-		return Par3DFP(D_volumeData, D_projData, dims, par3DProjs, outputScale);
+		return Par3DFP(D_volumeData, D_projData, dims, par3DProjs, outputScale * this->fOutputScale, mpiPrj);
 	}
 }
 
 bool ReconAlgo3D::callBP(cudaPitchedPtr& D_volumeData,
-                       cudaPitchedPtr& D_projData)
+                       cudaPitchedPtr& D_projData,
+                       float outputScale)
 {
 	if (coneProjs) {
-		return ConeBP(D_volumeData, D_projData, dims, coneProjs);
+		return ConeBP(D_volumeData, D_projData, dims, coneProjs, outputScale * this->fOutputScale, mpiPrj);
 	} else {
-		return Par3DBP(D_volumeData, D_projData, dims, par3DProjs);
+		return Par3DBP(D_volumeData, D_projData, dims, par3DProjs, outputScale * this->fOutputScale, mpiPrj);
 	}
 }
 

@@ -31,6 +31,7 @@ $Id$
 
 #include "dims3d.h"
 #include "util3d.h"
+#include "astra/MPIProjector3D.h"
 
 namespace astraCUDA3d {
 
@@ -39,8 +40,8 @@ public:
 	ReconAlgo3D();
 	~ReconAlgo3D();
 
-	bool setConeGeometry(const SDimensions3D& dims, const SConeProjection* projs);
-	bool setPar3DGeometry(const SDimensions3D& dims, const SPar3DProjection* projs);
+	bool setConeGeometry(const SDimensions3D& dims, const SConeProjection* projs, float fOutputScale);
+	bool setPar3DGeometry(const SDimensions3D& dims, const SPar3DProjection* projs, float fOutputScale);
 
 	void signalAbort() { shouldAbort = true; }
 
@@ -51,13 +52,22 @@ protected:
 	            cudaPitchedPtr& D_projData, 
 	            float outputScale);
 	bool callBP(cudaPitchedPtr& D_volumeData, 
-	            cudaPitchedPtr& D_projData);
+	            cudaPitchedPtr& D_projData,
+	            float outputScale);
 
 	SDimensions3D dims;
 	SConeProjection* coneProjs;
 	SPar3DProjection* par3DProjs;
 
+	float fOutputScale;
+
 	volatile bool shouldAbort;
+
+        astra::CMPIProjector3D *mpiPrj;
+public: 
+        void setMPIProjector3D(const astra::CMPIProjector3D *prj) {
+                               mpiPrj = const_cast<astra::CMPIProjector3D*>(prj);
+        }
 
 };
 

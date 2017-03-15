@@ -38,6 +38,7 @@ $Id$
 #include "testutil.h"
 #endif
 
+
 namespace astraCUDA3d {
 
 SIRT::SIRT() : ReconAlgo3D()
@@ -150,6 +151,7 @@ bool SIRT::precomputeWeights()
 		processVol3D<opSet>(D_tmpData, 1.0f, dims);
 		callFP(D_tmpData, D_lineWeight, 1.0f);
 	}
+	
 	processSino3D<opInvert>(D_lineWeight, dims);
 
 	if (useSinogramMask) {
@@ -160,10 +162,10 @@ bool SIRT::precomputeWeights()
 	zeroVolumeData(D_pixelWeight, dims);
 
 	if (useSinogramMask) {
-		callBP(D_pixelWeight, D_smaskData);
+		callBP(D_pixelWeight, D_smaskData, 1.0f);
 	} else {
 		processSino3D<opSet>(D_projData, 1.0f, dims);
-		callBP(D_pixelWeight, D_projData);
+		callBP(D_pixelWeight, D_projData, 1.0f);
 	}
 #if 0
 	float* bufp = new float[512*512];
@@ -235,6 +237,7 @@ bool SIRT::iterate(unsigned int iterations)
 	if (useVolumeMask || useSinogramMask)
 		precomputeWeights();
 
+
 #if 0
 	float* buf = new float[256*256];
 
@@ -264,7 +267,13 @@ bool SIRT::iterate(unsigned int iterations)
 	// iteration
 	for (unsigned int iter = 0; iter < iterations && !shouldAbort; ++iter) {
 		// copy sinogram to projection data
-		duplicateProjectionData(D_projData, D_sinoData, dims);
+
+#if 1// MPI
+                zeroProjectionData(D_projData, dims);
+#else
+                duplicateProjectionData(D_projData, D_sinoData, dims);
+#endif
+
 
 		// do FP, subtracting projection from sinogram
 		if (useVolumeMask) {
@@ -274,6 +283,11 @@ bool SIRT::iterate(unsigned int iterations)
 		} else {
 				callFP(D_volumeData, D_projData, -1.0f);
 		}
+
+
+#if 1 // MPI
+                processSino3D<opAddScaled>(D_projData, D_sinoData, 1, dims);
+#endif
 
 		processSino3D<opMul>(D_projData, D_lineWeight, dims);
 
@@ -293,7 +307,7 @@ bool SIRT::iterate(unsigned int iterations)
 #endif
 
 
-		callBP(D_tmpData, D_projData);
+		callBP(D_tmpData, D_projData, 1.0f);
 #if 0
 	printf("Dumping tmpData: %p\n", (void*)D_tmpData.ptr);
 	float* buf = new float[256*256];
@@ -347,7 +361,7 @@ bool doSIRT(cudaPitchedPtr& D_volumeData,
 	SIRT sirt;
 	bool ok = true;
 
-	ok &= sirt.setConeGeometry(dims, angles);
+	ok &= sirt.setConeGeometry(dims, angles, 1.0f);
 	if (D_maskData.ptr)
 		ok &= sirt.enableVolumeMask();
 
